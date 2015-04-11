@@ -15,11 +15,13 @@ static GPath *arrow;
 
 static const GPathInfo ARROW_POINTS = {
   3,
-  (GPoint[]) { {0, ARROW_HEIGHT}, {ARROW_WIDTH, ARROW_HEIGHT}, {ARROW_WIDTH / 2, 0} }
+  (GPoint[]) { {-(ARROW_WIDTH / 2), ARROW_HEIGHT / 2}, {(ARROW_WIDTH / 2), ARROW_HEIGHT / 2}, {0, -(ARROW_HEIGHT / 2)} }
 };
 
 static void compass_handler(CompassHeadingData data) {
+  // rotate arrow
   gpath_rotate_to(arrow, data.magnetic_heading);
+  layer_mark_dirty(arrow_layer);
 }
 
 static void arrow_layer_update_callback(Layer *path, GContext *ctx) {
@@ -29,9 +31,33 @@ static void arrow_layer_update_callback(Layer *path, GContext *ctx) {
   gpath_draw_outline(ctx, arrow);
 }
 
+static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "Message received!");
+  // TODO: PROCESS MESSAGES
+}
+
+static void inbox_dropped_callback(AppMessageResult reason, void *context) {
+  APP_LOG(APP_LOG_LEVEL_ERROR, "Message dropped!");
+}
+
+static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
+  APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed!");
+}
+
+static void outbox_sent_callback(DictionaryIterator *iterator, void *context) {
+  APP_LOG(APP_LOG_LEVEL_INFO, "Outbox send success!");
+}
+
 void init(void) {
+  // register compass service
   compass_service_subscribe(&compass_handler);
   compass_service_set_heading_filter(GRANULARITY);
+  
+  // register app communication service
+  app_message_register_inbox_received(inbox_received_callback);
+  app_message_register_inbox_dropped(inbox_dropped_callback);
+  app_message_register_outbox_failed(outbox_failed_callback);
+  app_message_register_outbox_sent(outbox_sent_callback);
   
   // create main window and set handlers
 	main_window = window_create();
@@ -69,7 +95,7 @@ static void main_window_load(Window *window) {
   
   // create and place arrow image
   arrow = gpath_create(&ARROW_POINTS);
-  GPoint fixed_center = GPoint((bounds.size.w - ARROW_WIDTH) / 2, (bounds.size.h - ARROW_HEIGHT) / 2 - 10);
+  GPoint fixed_center = GPoint(bounds.size.w / 2, bounds.size.h / 2 - 10);
   gpath_move_to(arrow, fixed_center);
   
   // add as children
