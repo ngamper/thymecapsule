@@ -1,5 +1,7 @@
 {
-    "appKeys": {},
+    "appKeys": {
+        "KEY_DATA": 18
+    },
     "capabilities": [
         ""
     ],
@@ -11,6 +13,10 @@
     },
     "sdkVersion": "3",
     "shortName": "Flashback",
+    "targetPlatforms": [
+        "aplite",
+        "basalt"
+    ],
     "uuid": "17f9ca76-e224-40c7-9477-9e991df39ca4",
     "versionCode": 1,
     "versionLabel": "1.0",
