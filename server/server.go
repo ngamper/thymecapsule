@@ -58,15 +58,13 @@ type Server struct {
 //Response what the upload sends me
 type Response struct {
 	uploader string
-	//I'm assuming that this is going to be base64 encoded despite the file size hit
+
 	payload []byte
 	//Extension will be inferred from the endpoint used
 	lat  string
 	long string
 }
 
-//Capsule is the Capsule that capsules
-//TODO(broluwo): Flesh out Capsule
 type Capsule struct {
 	Lat  string
 	Long string
@@ -166,12 +164,12 @@ func initHandlers() (router *mux.Router) {
 	router = mux.NewRouter()
 	router.HandleFunc(userEndpoint, handleUser).Methods("POST")
 	subR := router.PathPrefix("/cap").Subrouter()
-	subR.HandleFunc("/", handleImgCap).Methods("POST", "DELETE")
+	subR.HandleFunc("/", handleCap).Methods("GET", "POST", "DELETE")
 	//router.HandleFunc(vidCap, handleVidCap).Methods("POST", "DELETE")
 	return
 }
 
-func handleImgCap(w http.ResponseWriter, req *http.Request) {
+func handleCap(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
 		var res Response
@@ -205,32 +203,27 @@ func storeFileInFS(src []byte, fName string, extension string) {
 	checkFatalErr(err, "Couldn't Close file")
 }
 
-/*
-func handleVidCap(w http.ResponseWriter, req *http.Request) {
-	switch req.Method {
-	case "POST":
-		var res Response
-		err := ReadBSON(req, &res)
-		checkFatalErr(err, "Wat happened ")
-		contentID, err := uuid.NewV4()
-		checkPrintErr(err, "Unable to gen uuid")
-		storeFileInFS(res.payload, contentID.String(), ".mp4")
-		//now we write the file into the new
-		addFileToUser(contentID.String(), res.uploader)
-		//Tell them that we got their files
-		http.Error(w, http.StatusText(http.StatusCreated), http.StatusCreated)
-		break
-	}
-
-}
-*/
 func addFileToUser(fileName string, uploader string) {
+	users, err := SearchUserByUID(uploader, 0, -1)
+	checkPrintErr(err, "Couldn't add file to "+uploader)
+	for _, i := range users {
+		i.ContentID = append(i.ContentID, fileName)
+		change := mgo.Change{
+			Update: bson.M{"$set": bson.M{"contentid": i.ContentID}},
+		}
+
+		fn := func(c *mgo.Collection) error {
+			return c.Update(bson.M{"uid": i.uid}, change)
+		}
+		withCollection("user", fn)
+	}
 	//We need to do an insert into the user table now
 
 }
 func handleUser(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
+		//TODo(broluwo): Read name field in
 		uID, err := uuid.NewV4()
 		sUID, err := uuid.NewV4()
 		checkPrintErr(err, "Unable to gen uuid")
@@ -266,6 +259,29 @@ func ServeBSON(w http.ResponseWriter, v interface{}) {
 		w.Header().Set("Content-Type", "application/bson; charset=utf-8")
 		w.Write(data)
 	}
+}
+
+//SearchUser is important
+func SearchUser(q interface{}, skip int, limit int) (searchResults []User, err error) {
+	searchResults = []User{}
+	query := func(c *mgo.Collection) error {
+		function := c.Find(q).Skip(skip).Limit(limit).All(&searchResults)
+		if limit < 0 {
+			function = c.Find(q).Skip(skip).All(&searchResults)
+		}
+		return function
+	}
+	search := func() error {
+		return withCollection("user", query)
+	}
+	err = search()
+	return
+}
+
+//SearchUserByUID is a
+func SearchUserByUID(uid string, skip int, limit int) (searchResults []User, err error) {
+	return SearchUser(bson.M{"uid": uid}, skip, limit)
+
 }
 
 func checkPrintErr(err error, msg string) {
