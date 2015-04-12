@@ -1,10 +1,8 @@
 package main
 
 import (
-	"database/sql"
+	"bytes"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -13,6 +11,8 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/nu7hatch/gouuid"
+	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 )
 
 /*
@@ -29,9 +29,31 @@ const (
 	userEndpoint = "/user"
 	dbHost       = "localhost"
 	dbName       = "bitcamp"
+	dbURI        = "127.0.0.1"
 	sslMode      = "disable"
 	folderName   = "datafs"
 )
+
+var (
+	s               = Server{}
+	CollectionNames = []string{"user", "cap"}
+	userIndex       = mgo.Index{
+		Unique:     true,
+		DropDups:   true,
+		Background: true,
+		Sparse:     true,
+		Name:       "userIndex",
+	}
+
+	indices = []mgo.Index{userIndex}
+)
+
+//Server is the server
+type Server struct {
+	Session *mgo.Session // The main session we'll we be cloning
+	DBURI   string       // Where the DB is on the network
+	dbName  string       // Name of the MongoDB
+}
 
 //Response what the upload sends me
 type Response struct {
@@ -65,33 +87,80 @@ type User struct {
 }
 type sUID string
 
-var (
-	//Assumes it's set up with gen user accessibility
-	db     *sql.DB
-	dbUser = os.Getenv("USER")
-)
-
 func init() {
 	initDB()
 }
 
-//initDB Dials into the database
-func initDB() {
-	var err error
-	dbInfo := fmt.Sprintf("host=%s user=%s dbname=%s sslmode=%s", dbHost, dbUser, dbName, sslMode)
-	db, err = sql.Open("postgres", dbInfo)
-	if err != nil {
-		log.Fatalf("Database failed to initiate, %v", err)
-	}
-
-}
-
 func main() {
-	//Make sure we close the db connection when we are done.
-	defer db.Close()
+	//Make sure we kill conn to db
+	defer s.Session.Close()
 	//Pass off the handling to individual functions, but more correctly a mux Router
 	http.Handle("/", initHandlers())
 	log.Fatalln(http.ListenAndServe(":8080", nil))
+}
+func initDB() {
+	s.DBURI = dbURI
+	s.dbName = dbName
+	s.getSession()
+	s.Session.SetSafe(&mgo.Safe{})
+	s.Session.SetMode(mgo.Monotonic, true)
+	cNames, errors := EnsureIndex(CollectionNames, indices...)
+	for k, err := range errors {
+		if err != nil {
+			log.Fatalf("Indices not taking for %v;%v\n", cNames[k], err)
+		}
+	}
+}
+
+//EnsureIndex ensures that when we store things, we get the expected results
+func EnsureIndex(collectionNames []string, indices ...mgo.Index) (s []string, e []error) {
+	for j, k := range indices {
+		function := func(c *mgo.Collection) error {
+			return c.EnsureIndex(k)
+		}
+		err := withCollection(collectionNames[j], function)
+		if err != nil {
+			s = append(s, collectionNames[j])
+			e = append(e, err)
+		}
+	}
+	return
+}
+
+func (s *Server) getSession() *mgo.Session {
+	if s.Session == nil {
+		var err error
+		dialInfo := &mgo.DialInfo{
+			Addrs:    []string{s.DBURI},
+			Direct:   true,
+			FailFast: false,
+		}
+		s.Session, err = mgo.DialWithInfo(dialInfo)
+		if err != nil {
+			log.Fatalf("Can't find MongoDB. Is it started? %v\n", err)
+		}
+	}
+	// Returns a copy of the session so we don't waste le resources? Doesn't reuse socket however
+	return s.Session.Copy()
+}
+
+func withCollection(collection string, fn func(*mgo.Collection) error) error {
+	session := s.getSession()
+	defer session.Close()
+	c := session.DB(s.dbName).C(collection)
+	return fn(c)
+}
+
+//Insert datum into a specific collection
+func Insert(collectionName string, values ...interface{}) error {
+	function := func(c *mgo.Collection) error {
+		err := c.Insert(values...)
+		if err != nil {
+			log.Printf("Can't insert document, %v\n", err)
+		}
+		return err
+	}
+	return withCollection(collectionName, function)
 }
 
 func initHandlers() (router *mux.Router) {
@@ -106,7 +175,7 @@ func handleImgCap(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
 		var res Response
-		err := ReadJSON(req, &res)
+		err := ReadBSON(req, &res)
 		checkFatalErr(err, "Wat happened ")
 		dDec, err := base64.StdEncoding.DecodeString(res.payload)
 		//We may switch to gzip encode
@@ -130,11 +199,12 @@ func handleVidCap(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
 		var res Response
-		err := ReadJSON(req, &res)
+		err := ReadBSON(req, &res)
 		checkFatalErr(err, "Wat happened ")
 		dDec, err := base64.StdEncoding.DecodeString(res.payload)
 		//We may switch to gzip encode
 		checkPrintErr(err, "Something wrong")
+
 		err = os.Mkdir(folderName, os.ModePerm)
 		checkPrintErr(err, "Dir already exists")
 		contentID, err := uuid.NewV4()
@@ -159,24 +229,24 @@ func handleUser(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-//ReadJSON decodes JSON data into a provided struct
+//ReadBSON decodes BSON data into a provided struct
 //which is passed in as a pointer
-func ReadJSON(req *http.Request, i interface{}) error {
+func ReadBSON(req *http.Request, i interface{}) error {
 	defer req.Body.Close()
-	decoder := json.NewDecoder(req.Body)
-	err := decoder.Decode(i)
-	return err
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(req.Body)
+	return bson.Unmarshal(buf.Bytes(), i)
 }
 
-// ServeJSON replies to the request with a JSON obj
-func ServeJSON(w http.ResponseWriter, v interface{}) {
+// ServeBSON replies to the request with a BSON obj
+func ServeBSON(w http.ResponseWriter, v interface{}) {
 	//	doc := map[string]interface{}{"d": v}
-	if data, err := json.Marshal(v); err != nil {
-		log.Printf("Error marshalling json: %v", err)
+	if data, err := bson.Marshal(v); err != nil {
+		log.Printf("Error marshalling bson: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	} else {
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Type", "application/bson; charset=utf-8")
 		w.Write(data)
 	}
 }
