@@ -38,6 +38,7 @@ var (
 	s               = Server{}
 	CollectionNames = []string{"user", "cap"}
 	userIndex       = mgo.Index{
+		Key:        []string{"uid"},
 		Unique:     true,
 		DropDups:   true,
 		Background: true,
@@ -57,7 +58,7 @@ type Server struct {
 
 //Response what the upload sends me
 type Response struct {
-	uploader sUID
+	uploader string
 	//I'm assuming that this is going to be base64 encoded despite the file size hit
 	payload string
 	//Extension will be inferred from the endpoint used
@@ -77,27 +78,25 @@ type Capsule struct {
 //and i will send them back a uid that's now their uniqueid with which they can sign files
 //they will also get a shareuid which is how i will see who's friends and whose not
 type User struct {
-	uid      sUID
-	shareUID sUID
+	uid string
+	//Share UID
+	sUID string
 	//These are the confirmed friends in the sUID which will be searchable
-	Friends []sUID
+	Friends []string
 	//These are the pending sUID
-	Pending   []sUID
+	Pending   []string
 	ContentID []string
-}
-type sUID string
-
-func init() {
-	initDB()
 }
 
 func main() {
-	//Make sure we kill conn to db
+	initDB()
+	//Make sure we kill conn to db after the server is killed
 	defer s.Session.Close()
 	//Pass off the handling to individual functions, but more correctly a mux Router
 	http.Handle("/", initHandlers())
 	log.Fatalln(http.ListenAndServe(":8080", nil))
 }
+
 func initDB() {
 	s.DBURI = dbURI
 	s.dbName = dbName
@@ -219,14 +218,25 @@ func handleVidCap(w http.ResponseWriter, req *http.Request) {
 
 }
 
-func addFileToUser(fileName string, uploader sUID) {
+func addFileToUser(fileName string, uploader string) {
 	//We need to do an insert into the user table now
 }
 func handleUser(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
+		uID, err := uuid.NewV4()
+		sUID, err := uuid.NewV4()
+		checkPrintErr(err, "Unable to gen uuid")
+		Insert("user", User{
+			uid:  uID.String(),
+			sUID: sUID.String(),
+		})
+		out, err := bson.Marshal(bson.M{"uid": uID.String()})
+		checkPrintErr(err, "Couldn't marshal")
+		w.Write(out)
 		break
 	}
+	return
 }
 
 //ReadBSON decodes BSON data into a provided struct

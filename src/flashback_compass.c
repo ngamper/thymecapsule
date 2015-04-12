@@ -1,22 +1,62 @@
 #include <pebble.h>
+#include <math.h>
 #include "flashback_compass.h"
 
 static Window *main_window;
 static TextLayer *text_layer;
-//static BitmapLayer *bitmap_layer;
+static BitmapLayer *bitmap_layer;
 static Layer *arrow_layer;
 static GPath *arrow;
-static Location cur_loc, goal_loc;
+static Location cur_loc = {0, 0}, goal_loc = {0, 0};
+static int last_heading = 0, new_heading = 0, distance = 0;
 
 static const GPathInfo ARROW_POINTS = {
   3,
   (GPoint[]) { {-(ARROW_WIDTH / 2), ARROW_HEIGHT / 2}, {(ARROW_WIDTH / 2), ARROW_HEIGHT / 2}, {0, -(ARROW_HEIGHT / 2)} }
 };
 
-static void compass_handler(CompassHeadingData data) {
+static int32_t getDirection() {
+  // if goal coordinates are (0,0), no goal within range
+  if (goal_loc.x == 0 && goal_loc.y == 0)
+    return 0;
+  
+  return new_heading;
+}
+
+static int getDistance() {
+  return distance; //(int) (sqrt(pow(goal_loc.y - cur_loc.y, 2) + pow(goal_loc.x - cur_loc.x, 2)));
+}
+
+static void update_screen() {
   // rotate arrow on heading change
-  gpath_rotate_to(arrow, data.magnetic_heading);
+  int new_direction = getDirection();
+  gpath_rotate_to(arrow, (new_direction + last_heading) * TRIG_MAX_ANGLE / 360);
+  
+  // DEBUG
+  if (getDirection() == 44) {
+    text_layer_set_text(text_layer, "This is some shit");
+  }
+  
+  // print distance or nothing found
+  if (new_direction == 0) {
+    text_layer_set_text(text_layer, "Nothing found");
+  } else {
+    char buffer[7], number[5];
+    snprintf(number, sizeof(number), "%d", getDistance());
+    strcpy(buffer, number);
+    //strcpy(buffer + strlen(number), "ft\0");
+    //text_layer_set_text(text_layer, number);
+  }
+  
+  // mark layers to be redrawn
   layer_mark_dirty(arrow_layer);
+  layer_mark_dirty(bitmap_layer_get_layer(bitmap_layer));
+  layer_mark_dirty(text_layer_get_layer(text_layer));
+}
+
+static void compass_handler(CompassHeadingData data) {
+  last_heading = data.magnetic_heading;
+  update_screen();
 }
 
 static void arrow_layer_update_callback(Layer *path, GContext *ctx) {
@@ -27,12 +67,12 @@ static void arrow_layer_update_callback(Layer *path, GContext *ctx) {
 }
 
 // copy of isdigit to resolve external type-conflict errors
-int my_isdigit(char c) {
+static int my_isdigit(char c) {
   return (c >= '0' && c <= '9');
 }
 
 // copy of atof to resolve external type-conflict errors
-double my_atof(char *s) {
+static double my_atof(char *s) {
         double a = 0.0;
         int e = 0;
         int c;
@@ -72,39 +112,70 @@ double my_atof(char *s) {
         return a;
 }
 
+// copy of atoi 
+int my_atoi(char *str) {
+    int res = 0;  // Initialize result
+    int sign = 1;  // Initialize sign as positive
+    int i = 0;  // Initialize index of first digit
+     
+    // If number is negative, then update sign
+    if (str[0] == '-') {
+        sign = -1;  
+        i++;  // Also update index of first digit
+    }
+     
+    // Iterate through all digits and update the result
+    for (; str[i] != '\0'; ++i)
+        res = res*10 + str[i] - '0';
+   
+    // Return result with sign
+    return sign*res;
+}
+
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Message received!");
-  Tuple *t = dict_read_first(iterator);
-  int count = 0;
+  
+  // reset values
+  cur_loc.x = 0;
+  cur_loc.y = 0;
+  goal_loc.x = 0;
+  goal_loc.y = 0;
   
   // store incoming data
+  Tuple *t = dict_read_first(iterator);
   while(t != NULL) {
-    if (t->key == KEY_DATA) {
-      switch (count) {
-        case 0: 
-          cur_loc.x = my_atof(t->value->cstring);
-          break;
-        case 1:
-          cur_loc.y = my_atof(t->value->cstring);
-          break;
-        case 2:
-          goal_loc.x = my_atof(t->value->cstring);
-          break;
-        case 3:
-          goal_loc.y = my_atof(t->value->cstring);
-          break;
-        default:
-          APP_LOG(APP_LOG_LEVEL_ERROR, "Extra information received");
-          break;
-      }
-      count++;
+    switch (t->key) {
+      case CUR_X: 
+        cur_loc.x = my_atof(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "CUR_X received!");
+        break;
+      case CUR_Y:
+        cur_loc.y = my_atof(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "CUR_Y received!");
+        break;
+      case END_X:
+        goal_loc.x = my_atof(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "GOAL_X received!");
+        break;
+      case END_Y:
+        goal_loc.y = my_atof(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "GOAL_Y received!");
+        break;
+      case DIR:
+        new_heading = my_atoi(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "DIR received!");
+        break;
+      case DIST:
+        distance = my_atoi(t->value->cstring);
+        APP_LOG(APP_LOG_LEVEL_INFO, "DIST received!");
+        break;
+      default:
+        APP_LOG(APP_LOG_LEVEL_INFO, "Invalid key received");
+        break;
     }
     t = dict_read_next(iterator);
   }
-  
-  if (count != 4) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Incorrect amount of information received: %d", count);
-  }
+  update_screen();
 }
 
 static void inbox_dropped_callback(AppMessageResult reason, void *context) {
@@ -131,7 +202,7 @@ static void main_window_load(Window *window) {
   text_layer_set_text_alignment(text_layer, GTextAlignmentCenter);
   
   // create BitmapLayer
-  //bitmap_layer = bitmap_layer_create(GRect(0, 0, bounds.size.w, 130));
+  bitmap_layer = bitmap_layer_create(GRect(0, 0, bounds.size.w, 130));
   
   // create arrow layer
   arrow_layer = layer_create(bounds);
@@ -144,14 +215,14 @@ static void main_window_load(Window *window) {
   
   // add as children
   layer_add_child(window_layer, text_layer_get_layer(text_layer));
-  //layer_add_child(window_layer, bitmap_layer_get_layer(bitmap_layer));
+  layer_add_child(window_layer, bitmap_layer_get_layer(bitmap_layer));
   layer_add_child(window_layer, arrow_layer);
 }
 
 static void main_window_unload(Window *window) {
 	// destroy main_window children
   text_layer_destroy(text_layer);
-  //bitmap_layer_destroy(bitmap_layer);
+  bitmap_layer_destroy(bitmap_layer);
 }
 
 void init(void) {
