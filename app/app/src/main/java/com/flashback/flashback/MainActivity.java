@@ -14,7 +14,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 
 import com.astuetz.PagerSlidingTabStrip;
-
+import com.google.android.gms.common.ConnectionResult;
 
 public class MainActivity extends ActionBarActivity {
 
