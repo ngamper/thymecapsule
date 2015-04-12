@@ -2,12 +2,11 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/nu7hatch/gouuid"
@@ -60,7 +59,7 @@ type Server struct {
 type Response struct {
 	uploader string
 	//I'm assuming that this is going to be base64 encoded despite the file size hit
-	payload string
+	payload []byte
 	//Extension will be inferred from the endpoint used
 	lat  string
 	long string
@@ -94,6 +93,7 @@ func main() {
 	defer s.Session.Close()
 	//Pass off the handling to individual functions, but more correctly a mux Router
 	http.Handle("/", initHandlers())
+	log.Println("Routes initted")
 	log.Fatalln(http.ListenAndServe(":8080", nil))
 }
 
@@ -165,8 +165,9 @@ func Insert(collectionName string, values ...interface{}) error {
 func initHandlers() (router *mux.Router) {
 	router = mux.NewRouter()
 	router.HandleFunc(userEndpoint, handleUser).Methods("POST")
-	router.HandleFunc(imgCap, handleImgCap).Methods("POST", "DELETE")
-	router.HandleFunc(vidCap, handleVidCap).Methods("POST", "DELETE")
+	subR := router.PathPrefix("/cap").Subrouter()
+	subR.HandleFunc("/", handleImgCap).Methods("POST", "DELETE")
+	//router.HandleFunc(vidCap, handleVidCap).Methods("POST", "DELETE")
 	return
 }
 
@@ -176,16 +177,13 @@ func handleImgCap(w http.ResponseWriter, req *http.Request) {
 		var res Response
 		err := ReadBSON(req, &res)
 		checkFatalErr(err, "Wat happened ")
-		dDec, err := base64.StdEncoding.DecodeString(res.payload)
-		//We may switch to gzip encode
-		checkPrintErr(err, "Something wrong")
-		err = os.Mkdir(folderName, os.ModePerm)
-		checkPrintErr(err, "Dir already exists")
 		contentID, err := uuid.NewV4()
 		checkPrintErr(err, "Unable to gen uuid")
-		//		if strings.Contains(req.Url,img)
-		ioutil.WriteFile("./"+folderName+"/"+contentID.String(), dDec, 0755)
-		//now we write the file into the new
+		if strings.Contains(req.URL.String(), "img") {
+			storeFileInFS(res.payload, contentID.String(), ".jpg")
+		} else {
+			storeFileInFS(res.payload, contentID.String(), ".mp4")
+		}
 		addFileToUser(contentID.String(), res.uploader)
 		//Tell them that we got their files
 		http.Error(w, http.StatusText(http.StatusCreated), http.StatusCreated)
@@ -194,21 +192,29 @@ func handleImgCap(w http.ResponseWriter, req *http.Request) {
 
 }
 
+func storeFileInFS(src []byte, fName string, extension string) {
+	db := s.getSession().DB(dbName)
+	dest, err := db.GridFS("fs").Create(fName + extension)
+	checkPrintErr(err, "Couldn't store file")
+	numBytes, err := io.Copy(dest, bytes.NewReader(src))
+	checkPrintErr(err, "Couldn't write data")
+	if int(numBytes) != len(src) {
+		log.Println("We didn't write out all the bytes?")
+	}
+	err = dest.Close()
+	checkFatalErr(err, "Couldn't Close file")
+}
+
+/*
 func handleVidCap(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case "POST":
 		var res Response
 		err := ReadBSON(req, &res)
 		checkFatalErr(err, "Wat happened ")
-		dDec, err := base64.StdEncoding.DecodeString(res.payload)
-		//We may switch to gzip encode
-		checkPrintErr(err, "Something wrong")
-
-		err = os.Mkdir(folderName, os.ModePerm)
-		checkPrintErr(err, "Dir already exists")
 		contentID, err := uuid.NewV4()
 		checkPrintErr(err, "Unable to gen uuid")
-		ioutil.WriteFile("./"+folderName+"/"+contentID.String(), dDec, 0755)
+		storeFileInFS(res.payload, contentID.String(), ".mp4")
 		//now we write the file into the new
 		addFileToUser(contentID.String(), res.uploader)
 		//Tell them that we got their files
@@ -217,9 +223,10 @@ func handleVidCap(w http.ResponseWriter, req *http.Request) {
 	}
 
 }
-
+*/
 func addFileToUser(fileName string, uploader string) {
 	//We need to do an insert into the user table now
+
 }
 func handleUser(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
