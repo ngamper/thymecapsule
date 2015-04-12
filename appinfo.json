@@ -1,6 +1,11 @@
 {
     "appKeys": {
-        "KEY_DATA": 18
+        "CUR_X": 0,
+        "CUR_Y": 1,
+        "DIR": 4,
+        "DIST": 5,
+        "END_X": 2,
+        "END_Y": 3
     },
     "capabilities": [
         ""
